@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3001
 // Middleware - Allow requests from Netlify
 app.use(
   cors({
-    origin: ["http://localhost:3000", "https://*.netlify.app", "https://netlify.app"],
+    origin: ["http://localhost:3000", "https://famous-elf-608456.netlify.app/", "https://netlify.app"],
   }),
 )
 app.use(express.json())
