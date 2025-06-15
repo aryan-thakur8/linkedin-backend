@@ -14,155 +14,122 @@ app.use(
 )
 app.use(express.json())
 
-// POST /api/search-employees
+// POST /api/search-employees - Now using Apollo.io
 app.post("/api/search-employees", async (req, res) => {
   try {
     const { searchParams } = req.body
 
-    // Use built-in API key from environment variable (People Data Labs)
-    const apiKey = process.env.PEOPLEDATALABS_API_KEY
+    // Use Apollo.io API key from environment variable
+    const apiKey = process.env.APOLLO_API_KEY
 
     if (!apiKey) {
       return res.status(500).json({
         error: "API configuration error",
-        details: "Please contact support",
+        details: "Apollo.io API key not configured. Please contact support.",
       })
     }
 
-    // Build Elasticsearch query for People Data Labs
-    const must = []
+    // Build Apollo.io search request
+    const apolloRequest = {
+      // Required: Organization names array
+      organization_names: [searchParams.company],
 
-    if (searchParams.company) {
-      must.push({
-        match: {
-          job_company_name: searchParams.company,
-        },
-      })
+      // Optional filters
+      ...(searchParams.jobTitle && { person_titles: [searchParams.jobTitle] }),
+      ...(searchParams.location && { organization_locations: [searchParams.location] }),
+
+      // Limit results to save credits
+      page: 1,
+      per_page: 5, // Small number to conserve credits
+
+      // Request specific fields to ensure we get what we need
+      person_titles: searchParams.jobTitle ? [searchParams.jobTitle] : undefined,
     }
 
-    if (searchParams.jobTitle) {
-      must.push({
-        match: {
-          job_title: searchParams.jobTitle,
-        },
-      })
-    }
+    // Remove undefined fields
+    Object.keys(apolloRequest).forEach((key) => {
+      if (apolloRequest[key] === undefined) {
+        delete apolloRequest[key]
+      }
+    })
 
-    if (searchParams.location) {
-      must.push({
-        match: {
-          location_name: searchParams.location,
-        },
-      })
-    }
+    console.log("Apollo.io request:", JSON.stringify(apolloRequest, null, 2))
 
-    const elasticQuery = {
-      bool: {
-        must: must,
-      },
-    }
-
-    console.log("Elasticsearch query:", JSON.stringify(elasticQuery, null, 2))
-
-    // CORRECT APPROACH: Use 'required' parameter to only get people WITH emails
-    const requestBody = {
-      query: elasticQuery,
-      size: 3, // Minimum size to save credits
-      pretty: true,
-      // ONLY return people who have actual work emails (not just boolean flags)
-      required: "work_email",
-    }
-
-    console.log("Request body:", JSON.stringify(requestBody, null, 2))
-
-    const response = await axios.post("https://api.peopledatalabs.com/v5/person/search", requestBody, {
+    const response = await axios.post("https://api.apollo.io/v1/mixed_people/search", apolloRequest, {
       headers: {
         "Content-Type": "application/json",
+        "Cache-Control": "no-cache",
         "X-Api-Key": apiKey,
       },
     })
 
-    console.log("=== API RESPONSE STATUS ===")
-    console.log("Status:", response.status)
-    console.log("Total results:", response.data.total)
-    console.log("Results returned:", response.data.data?.length || 0)
+    console.log("Apollo.io response status:", response.status)
+    console.log("Total people found:", response.data.pagination?.total_entries || 0)
+    console.log("People returned:", response.data.people?.length || 0)
 
-    // Log first person's email fields
-    if (response.data.data && response.data.data.length > 0) {
-      console.log("=== FIRST PERSON EMAIL DATA ===")
-      const firstPerson = response.data.data[0]
-      console.log("work_email type:", typeof firstPerson.work_email)
-      console.log("work_email value:", firstPerson.work_email)
-      console.log("emails field:", firstPerson.emails)
-
-      // Check if it's still boolean
-      if (firstPerson.work_email === true || firstPerson.work_email === "true") {
-        console.log("❌ STILL GETTING BOOLEAN - API KEY LIMITATION")
-      } else if (typeof firstPerson.work_email === "string" && firstPerson.work_email.includes("@")) {
-        console.log("✅ SUCCESS - GOT ACTUAL EMAIL")
-      }
+    // Log first person's data for debugging
+    if (response.data.people && response.data.people.length > 0) {
+      console.log("=== FIRST PERSON FROM APOLLO ===")
+      const firstPerson = response.data.people[0]
+      console.log("Name:", firstPerson.first_name, firstPerson.last_name)
+      console.log("Email:", firstPerson.email)
+      console.log("Title:", firstPerson.title)
+      console.log("LinkedIn:", firstPerson.linkedin_url)
+      console.log("Organization:", firstPerson.organization?.name)
     }
 
-    // Simple email extraction - prioritize work_email if it's a real string
+    // Transform Apollo.io response to match our frontend expectations
     const transformedData = {
-      ...response.data,
       data:
-        response.data.data?.map((person, index) => {
-          let workEmail = null
-
-          // Check if work_email is an actual email string (not boolean)
-          if (
-            person.work_email &&
-            typeof person.work_email === "string" &&
-            person.work_email !== "true" &&
-            person.work_email.includes("@")
-          ) {
-            workEmail = person.work_email
-          }
-          // Fallback to emails array if available
-          else if (person.emails && Array.isArray(person.emails) && person.emails.length > 0) {
-            const emailObj = person.emails.find((e) => e.address && e.address.includes("@"))
-            if (emailObj) {
-              workEmail = emailObj.address
-            }
-          }
-
-          console.log(`Person ${index + 1}: ${person.first_name} ${person.last_name} - Email: ${workEmail || "NONE"}`)
-
-          return {
-            first_name: person.first_name,
-            last_name: person.last_name,
-            job_title: person.job_title,
-            job_company_name: person.job_company_name,
-            linkedin_url: person.linkedin_url,
-            work_email: workEmail,
-            profile_pic_url: person.profile_pic_url,
-          }
-        }) || [],
+        response.data.people?.map((person) => ({
+          first_name: person.first_name || "",
+          last_name: person.last_name || "",
+          job_title: person.title || person.headline || "",
+          job_company_name: person.organization?.name || searchParams.company,
+          linkedin_url: person.linkedin_url || "",
+          work_email: person.email || null,
+          profile_pic_url: person.photo_url || null,
+        })) || [],
+      total: response.data.pagination?.total_entries || 0,
+      credits_used: response.data.people?.length || 0,
+      provider: "Apollo.io",
     }
+
+    console.log("Transformed data:", transformedData.data.length, "people")
+
+    // Log email success rate
+    const emailCount = transformedData.data.filter((p) => p.work_email).length
+    console.log(`Emails found: ${emailCount}/${transformedData.data.length}`)
 
     res.json(transformedData)
   } catch (error) {
-    console.error("API Error:", error.response?.data || error.message)
+    console.error("Apollo.io API Error:", error.response?.data || error.message)
 
-    // Handle specific PDL errors
-    if (error.response?.status === 400) {
-      return res.status(400).json({
-        error: "Invalid search parameters",
-        details: error.response.data.error || "Check your search criteria",
+    // Handle specific Apollo.io errors
+    if (error.response?.status === 401) {
+      return res.status(401).json({
+        error: "Invalid Apollo.io API key",
+        details: "Please check your API key configuration",
+      })
+    }
+
+    if (error.response?.status === 429) {
+      return res.status(429).json({
+        error: "Apollo.io rate limit exceeded",
+        details: "You've used all your credits. Try again next month or upgrade your plan.",
       })
     }
 
     if (error.response?.status === 402) {
       return res.status(402).json({
-        error: "Insufficient credits",
-        details: "Your PDL account needs more credits for email data",
+        error: "Apollo.io credits exhausted",
+        details: "Your free credits are used up. Upgrade your Apollo.io plan for more searches.",
       })
     }
 
     res.status(500).json({
       error: "Employee data extraction failed",
-      details: error.response?.data?.error || error.message,
+      details: error.response?.data?.message || error.message,
     })
   }
 })
@@ -171,7 +138,7 @@ app.post("/api/search-employees", async (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     message: "🚀 LinkedIn Employee Data Extractor API is running!",
-    provider: "People Data Labs",
+    provider: "Apollo.io",
     status: "healthy",
     timestamp: new Date().toISOString(),
   })
@@ -180,5 +147,5 @@ app.get("/", (req, res) => {
 // Start server
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`)
-  console.log(`🔗 Using People Data Labs API for employee data extraction`)
+  console.log(`🔗 Using Apollo.io API for employee data extraction`)
 })
