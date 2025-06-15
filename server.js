@@ -14,7 +14,7 @@ app.use(
 )
 app.use(express.json())
 
-// POST /api/search-employees - Now using Apollo.io
+// POST /api/search-employees - Using Apollo.io contacts/search
 app.post("/api/search-employees", async (req, res) => {
   try {
     const { searchParams } = req.body
@@ -29,33 +29,23 @@ app.post("/api/search-employees", async (req, res) => {
       })
     }
 
-    // Build Apollo.io search request
+    // Build Apollo.io contacts search request (different format)
     const apolloRequest = {
-      // Required: Organization names array
-      organization_names: [searchParams.company],
+      // Use q parameter for general search
+      q: `${searchParams.company}${searchParams.jobTitle ? ` ${searchParams.jobTitle}` : ""}`,
 
-      // Optional filters
-      ...(searchParams.jobTitle && { person_titles: [searchParams.jobTitle] }),
-      ...(searchParams.location && { organization_locations: [searchParams.location] }),
+      // Alternative: try organization filter if available
+      organization_names: [searchParams.company],
 
       // Limit results to save credits
       page: 1,
-      per_page: 5, // Small number to conserve credits
-
-      // Request specific fields to ensure we get what we need
-      person_titles: searchParams.jobTitle ? [searchParams.jobTitle] : undefined,
+      per_page: 5,
     }
 
-    // Remove undefined fields
-    Object.keys(apolloRequest).forEach((key) => {
-      if (apolloRequest[key] === undefined) {
-        delete apolloRequest[key]
-      }
-    })
+    console.log("Apollo.io contacts/search request:", JSON.stringify(apolloRequest, null, 2))
 
-    console.log("Apollo.io request:", JSON.stringify(apolloRequest, null, 2))
-
-    const response = await axios.post("https://api.apollo.io/v1/mixed_people/search", apolloRequest, {
+    // Try contacts/search endpoint instead
+    const response = await axios.post("https://api.apollo.io/v1/contacts/search", apolloRequest, {
       headers: {
         "Content-Type": "application/json",
         "Cache-Control": "no-cache",
@@ -64,38 +54,38 @@ app.post("/api/search-employees", async (req, res) => {
     })
 
     console.log("Apollo.io response status:", response.status)
-    console.log("Total people found:", response.data.pagination?.total_entries || 0)
-    console.log("People returned:", response.data.people?.length || 0)
+    console.log("Total contacts found:", response.data.pagination?.total_entries || 0)
+    console.log("Contacts returned:", response.data.contacts?.length || 0)
 
-    // Log first person's data for debugging
-    if (response.data.people && response.data.people.length > 0) {
-      console.log("=== FIRST PERSON FROM APOLLO ===")
-      const firstPerson = response.data.people[0]
-      console.log("Name:", firstPerson.first_name, firstPerson.last_name)
-      console.log("Email:", firstPerson.email)
-      console.log("Title:", firstPerson.title)
-      console.log("LinkedIn:", firstPerson.linkedin_url)
-      console.log("Organization:", firstPerson.organization?.name)
+    // Log first contact's data for debugging
+    if (response.data.contacts && response.data.contacts.length > 0) {
+      console.log("=== FIRST CONTACT FROM APOLLO ===")
+      const firstContact = response.data.contacts[0]
+      console.log("Name:", firstContact.first_name, firstContact.last_name)
+      console.log("Email:", firstContact.email)
+      console.log("Title:", firstContact.title)
+      console.log("LinkedIn:", firstContact.linkedin_url)
+      console.log("Organization:", firstContact.organization?.name)
     }
 
-    // Transform Apollo.io response to match our frontend expectations
+    // Transform Apollo.io contacts response to match our frontend expectations
     const transformedData = {
       data:
-        response.data.people?.map((person) => ({
-          first_name: person.first_name || "",
-          last_name: person.last_name || "",
-          job_title: person.title || person.headline || "",
-          job_company_name: person.organization?.name || searchParams.company,
-          linkedin_url: person.linkedin_url || "",
-          work_email: person.email || null,
-          profile_pic_url: person.photo_url || null,
+        response.data.contacts?.map((contact) => ({
+          first_name: contact.first_name || "",
+          last_name: contact.last_name || "",
+          job_title: contact.title || contact.headline || "",
+          job_company_name: contact.organization?.name || searchParams.company,
+          linkedin_url: contact.linkedin_url || "",
+          work_email: contact.email || null,
+          profile_pic_url: contact.photo_url || null,
         })) || [],
       total: response.data.pagination?.total_entries || 0,
-      credits_used: response.data.people?.length || 0,
-      provider: "Apollo.io",
+      credits_used: response.data.contacts?.length || 0,
+      provider: "Apollo.io (Contacts Search)",
     }
 
-    console.log("Transformed data:", transformedData.data.length, "people")
+    console.log("Transformed data:", transformedData.data.length, "contacts")
 
     // Log email success rate
     const emailCount = transformedData.data.filter((p) => p.work_email).length
@@ -113,17 +103,17 @@ app.post("/api/search-employees", async (req, res) => {
       })
     }
 
+    if (error.response?.status === 403) {
+      return res.status(403).json({
+        error: "Apollo.io API access denied",
+        details: "Your API key doesn't have access to this endpoint. Try upgrading your Apollo.io plan.",
+      })
+    }
+
     if (error.response?.status === 429) {
       return res.status(429).json({
         error: "Apollo.io rate limit exceeded",
         details: "You've used all your credits. Try again next month or upgrade your plan.",
-      })
-    }
-
-    if (error.response?.status === 402) {
-      return res.status(402).json({
-        error: "Apollo.io credits exhausted",
-        details: "Your free credits are used up. Upgrade your Apollo.io plan for more searches.",
       })
     }
 
@@ -138,7 +128,7 @@ app.post("/api/search-employees", async (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     message: "🚀 LinkedIn Employee Data Extractor API is running!",
-    provider: "Apollo.io",
+    provider: "Apollo.io (Contacts Search)",
     status: "healthy",
     timestamp: new Date().toISOString(),
   })
@@ -147,5 +137,5 @@ app.get("/", (req, res) => {
 // Start server
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`)
-  console.log(`🔗 Using Apollo.io API for employee data extraction`)
+  console.log(`🔗 Using Apollo.io Contacts Search API for employee data extraction`)
 })
