@@ -64,12 +64,16 @@ app.post("/api/search-employees", async (req, res) => {
 
     console.log("Elasticsearch query:", JSON.stringify(elasticQuery, null, 2))
 
-    // MINIMAL request body - exactly as per PDL docs
+    // CORRECT APPROACH: Use 'required' parameter to only get people WITH emails
     const requestBody = {
       query: elasticQuery,
-      size: 5, // Even smaller to save credits while debugging
+      size: 3, // Minimum size to save credits
       pretty: true,
+      // ONLY return people who have actual work emails (not just boolean flags)
+      required: "work_email",
     }
+
+    console.log("Request body:", JSON.stringify(requestBody, null, 2))
 
     const response = await axios.post("https://api.peopledatalabs.com/v5/person/search", requestBody, {
       headers: {
@@ -78,71 +82,52 @@ app.post("/api/search-employees", async (req, res) => {
       },
     })
 
-    // DETAILED DEBUGGING - Log first person's ALL fields
+    console.log("=== API RESPONSE STATUS ===")
+    console.log("Status:", response.status)
+    console.log("Total results:", response.data.total)
+    console.log("Results returned:", response.data.data?.length || 0)
+
+    // Log first person's email fields
     if (response.data.data && response.data.data.length > 0) {
-      console.log("=== FIRST PERSON COMPLETE DATA ===")
-      console.log(JSON.stringify(response.data.data[0], null, 2))
-      console.log("=== EMAIL FIELDS SPECIFICALLY ===")
+      console.log("=== FIRST PERSON EMAIL DATA ===")
       const firstPerson = response.data.data[0]
-      console.log("work_email:", firstPerson.work_email)
-      console.log("email:", firstPerson.email)
-      console.log("emails:", firstPerson.emails)
-      console.log("personal_emails:", firstPerson.personal_emails)
-      console.log("business_email:", firstPerson.business_email)
-      console.log("=== ALL FIELDS CONTAINING 'email' ===")
-      Object.keys(firstPerson).forEach((key) => {
-        if (key.toLowerCase().includes("email")) {
-          console.log(`${key}:`, firstPerson[key])
-        }
-      })
+      console.log("work_email type:", typeof firstPerson.work_email)
+      console.log("work_email value:", firstPerson.work_email)
+      console.log("emails field:", firstPerson.emails)
+
+      // Check if it's still boolean
+      if (firstPerson.work_email === true || firstPerson.work_email === "true") {
+        console.log("❌ STILL GETTING BOOLEAN - API KEY LIMITATION")
+      } else if (typeof firstPerson.work_email === "string" && firstPerson.work_email.includes("@")) {
+        console.log("✅ SUCCESS - GOT ACTUAL EMAIL")
+      }
     }
 
-    // Enhanced email extraction with detailed logging
+    // Simple email extraction - prioritize work_email if it's a real string
     const transformedData = {
       ...response.data,
       data:
         response.data.data?.map((person, index) => {
           let workEmail = null
-          let emailSource = "none"
 
-          // Check all possible email fields with logging
-          if (person.work_email && person.work_email !== true && person.work_email !== "true") {
-            workEmail = person.work_email
-            emailSource = "work_email"
-          } else if (person.email && person.email !== true && person.email !== "true") {
-            workEmail = person.email
-            emailSource = "email"
-          } else if (person.emails && Array.isArray(person.emails) && person.emails.length > 0) {
-            // Check emails array
-            const workEmailObj = person.emails.find(
-              (email) =>
-                email.address && (email.type === "work" || email.type === "professional" || email.type === "business"),
-            )
-            if (workEmailObj) {
-              workEmail = workEmailObj.address
-              emailSource = "emails_array_work"
-            } else if (person.emails[0] && person.emails[0].address) {
-              workEmail = person.emails[0].address
-              emailSource = "emails_array_first"
-            }
-          } else if (person.business_email && person.business_email !== true && person.business_email !== "true") {
-            workEmail = person.business_email
-            emailSource = "business_email"
-          } else if (
-            person.personal_emails &&
-            Array.isArray(person.personal_emails) &&
-            person.personal_emails.length > 0
+          // Check if work_email is an actual email string (not boolean)
+          if (
+            person.work_email &&
+            typeof person.work_email === "string" &&
+            person.work_email !== "true" &&
+            person.work_email.includes("@")
           ) {
-            workEmail = person.personal_emails[0]
-            emailSource = "personal_emails"
+            workEmail = person.work_email
+          }
+          // Fallback to emails array if available
+          else if (person.emails && Array.isArray(person.emails) && person.emails.length > 0) {
+            const emailObj = person.emails.find((e) => e.address && e.address.includes("@"))
+            if (emailObj) {
+              workEmail = emailObj.address
+            }
           }
 
-          // Log email extraction for first few people
-          if (index < 3) {
-            console.log(`Person ${index + 1} - ${person.first_name} ${person.last_name}:`)
-            console.log(`  Email found: ${workEmail || "NONE"}`)
-            console.log(`  Email source: ${emailSource}`)
-          }
+          console.log(`Person ${index + 1}: ${person.first_name} ${person.last_name} - Email: ${workEmail || "NONE"}`)
 
           return {
             first_name: person.first_name,
@@ -152,15 +137,6 @@ app.post("/api/search-employees", async (req, res) => {
             linkedin_url: person.linkedin_url,
             work_email: workEmail,
             profile_pic_url: person.profile_pic_url,
-            // Add debug info to response
-            email_debug: {
-              source: emailSource,
-              raw_work_email: person.work_email,
-              raw_email: person.email,
-              raw_emails_array: person.emails,
-              has_emails_field: !!person.emails,
-              emails_length: person.emails ? person.emails.length : 0,
-            },
           }
         }) || [],
     }
@@ -168,6 +144,22 @@ app.post("/api/search-employees", async (req, res) => {
     res.json(transformedData)
   } catch (error) {
     console.error("API Error:", error.response?.data || error.message)
+
+    // Handle specific PDL errors
+    if (error.response?.status === 400) {
+      return res.status(400).json({
+        error: "Invalid search parameters",
+        details: error.response.data.error || "Check your search criteria",
+      })
+    }
+
+    if (error.response?.status === 402) {
+      return res.status(402).json({
+        error: "Insufficient credits",
+        details: "Your PDL account needs more credits for email data",
+      })
+    }
+
     res.status(500).json({
       error: "Employee data extraction failed",
       details: error.response?.data?.error || error.message,
