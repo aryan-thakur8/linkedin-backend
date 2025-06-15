@@ -64,26 +64,13 @@ app.post("/api/search-employees", async (req, res) => {
 
     console.log("Elasticsearch query:", JSON.stringify(elasticQuery, null, 2))
 
-    // Updated request body with proper field selection for emails
+    // MINIMAL request body - exactly as per PDL docs
     const requestBody = {
       query: elasticQuery,
-      size: 20,
+      size: 10, // Reduced to save credits
       pretty: true,
-      // Request specific fields including email data
-      dataset: "phone,email,profile,professional",
-      required: "emails AND profiles",
-      // Select specific fields to ensure we get email addresses
-      select: [
-        "first_name",
-        "last_name",
-        "job_title",
-        "job_company_name",
-        "linkedin_url",
-        "emails",
-        "work_email",
-        "personal_emails",
-        "profiles",
-      ],
+      // NO dataset parameter - to avoid extra charges
+      // NO select parameter - to get all available fields including emails
     }
 
     const response = await axios.post("https://api.peopledatalabs.com/v5/person/search", requestBody, {
@@ -93,42 +80,45 @@ app.post("/api/search-employees", async (req, res) => {
       },
     })
 
-    console.log("Raw API Response:", JSON.stringify(response.data, null, 2))
+    console.log("Raw API Response Sample:", JSON.stringify(response.data.data?.[0], null, 2))
 
-    // Transform response to extract actual email addresses
+    // Simple email extraction based on PDL standard response
     const transformedData = {
       ...response.data,
       data:
         response.data.data?.map((person) => {
-          // Extract actual email from various possible fields
+          // PDL returns emails in different formats:
+          // 1. work_email: string (direct work email)
+          // 2. emails: array of {address: string, type: string}
+          // 3. Sometimes just email: string
+
           let workEmail = null
 
-          // Try different email field structures
-          if (person.emails && Array.isArray(person.emails) && person.emails.length > 0) {
-            // Find work email from emails array
-            const workEmailObj = person.emails.find((email) => email.type === "work" || email.type === "professional")
-            workEmail = workEmailObj ? workEmailObj.address : person.emails[0].address
-          } else if (person.work_email && typeof person.work_email === "string") {
+          // Priority order for email extraction
+          if (person.work_email && typeof person.work_email === "string" && person.work_email !== "true") {
             workEmail = person.work_email
-          } else if (
-            person.personal_emails &&
-            Array.isArray(person.personal_emails) &&
-            person.personal_emails.length > 0
-          ) {
-            workEmail = person.personal_emails[0]
+          } else if (person.emails && Array.isArray(person.emails)) {
+            // Find work email from emails array
+            const workEmailObj = person.emails.find(
+              (email) => email.type === "work" || email.type === "professional" || email.type === "business",
+            )
+            if (workEmailObj && workEmailObj.address) {
+              workEmail = workEmailObj.address
+            } else if (person.emails[0] && person.emails[0].address) {
+              workEmail = person.emails[0].address // Use first email as fallback
+            }
+          } else if (person.email && typeof person.email === "string" && person.email !== "true") {
+            workEmail = person.email
           }
 
           return {
-            ...person,
+            first_name: person.first_name,
+            last_name: person.last_name,
+            job_title: person.job_title,
+            job_company_name: person.job_company_name,
+            linkedin_url: person.linkedin_url,
             work_email: workEmail,
-            // Keep original email data for debugging
-            original_emails: person.emails,
-            email_debug: {
-              emails_type: typeof person.emails,
-              emails_value: person.emails,
-              work_email_type: typeof person.work_email,
-              work_email_value: person.work_email,
-            },
+            profile_pic_url: person.profile_pic_url,
           }
         }) || [],
     }
