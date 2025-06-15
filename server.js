@@ -14,112 +14,136 @@ app.use(
 )
 app.use(express.json())
 
-// POST /api/search-employees - Using Apollo.io contacts/search
+// POST /api/search-employees - Back to People Data Labs
 app.post("/api/search-employees", async (req, res) => {
   try {
     const { searchParams } = req.body
 
-    // Use Apollo.io API key from environment variable
-    const apiKey = process.env.APOLLO_API_KEY
+    // Use People Data Labs API key from environment variable
+    const apiKey = process.env.PEOPLEDATALABS_API_KEY
 
     if (!apiKey) {
       return res.status(500).json({
         error: "API configuration error",
-        details: "Apollo.io API key not configured. Please contact support.",
+        details: "People Data Labs API key not configured. Please contact support.",
       })
     }
 
-    // Build Apollo.io contacts search request (different format)
-    const apolloRequest = {
-      // Use q parameter for general search
-      q: `${searchParams.company}${searchParams.jobTitle ? ` ${searchParams.jobTitle}` : ""}`,
+    // Build Elasticsearch query for People Data Labs
+    const must = []
 
-      // Alternative: try organization filter if available
-      organization_names: [searchParams.company],
-
-      // Limit results to save credits
-      page: 1,
-      per_page: 5,
+    if (searchParams.company) {
+      must.push({
+        match: {
+          job_company_name: searchParams.company,
+        },
+      })
     }
 
-    console.log("Apollo.io contacts/search request:", JSON.stringify(apolloRequest, null, 2))
+    if (searchParams.jobTitle) {
+      must.push({
+        match: {
+          job_title: searchParams.jobTitle,
+        },
+      })
+    }
 
-    // Try contacts/search endpoint instead
-    const response = await axios.post("https://api.apollo.io/v1/contacts/search", apolloRequest, {
+    if (searchParams.location) {
+      must.push({
+        match: {
+          location_name: searchParams.location,
+        },
+      })
+    }
+
+    const elasticQuery = {
+      bool: {
+        must: must,
+      },
+    }
+
+    console.log("People Data Labs query:", JSON.stringify(elasticQuery, null, 2))
+
+    // Clean PDL request
+    const requestBody = {
+      query: elasticQuery,
+      size: 10,
+      pretty: true,
+    }
+
+    const response = await axios.post("https://api.peopledatalabs.com/v5/person/search", requestBody, {
       headers: {
         "Content-Type": "application/json",
-        "Cache-Control": "no-cache",
         "X-Api-Key": apiKey,
       },
     })
 
-    console.log("Apollo.io response status:", response.status)
-    console.log("Total contacts found:", response.data.pagination?.total_entries || 0)
-    console.log("Contacts returned:", response.data.contacts?.length || 0)
+    console.log("PDL response status:", response.status)
+    console.log("Total people found:", response.data.total || 0)
+    console.log("People returned:", response.data.data?.length || 0)
 
-    // Log first contact's data for debugging
-    if (response.data.contacts && response.data.contacts.length > 0) {
-      console.log("=== FIRST CONTACT FROM APOLLO ===")
-      const firstContact = response.data.contacts[0]
-      console.log("Name:", firstContact.first_name, firstContact.last_name)
-      console.log("Email:", firstContact.email)
-      console.log("Title:", firstContact.title)
-      console.log("LinkedIn:", firstContact.linkedin_url)
-      console.log("Organization:", firstContact.organization?.name)
-    }
-
-    // Transform Apollo.io contacts response to match our frontend expectations
+    // Transform PDL response - handle boolean emails gracefully
     const transformedData = {
       data:
-        response.data.contacts?.map((contact) => ({
-          first_name: contact.first_name || "",
-          last_name: contact.last_name || "",
-          job_title: contact.title || contact.headline || "",
-          job_company_name: contact.organization?.name || searchParams.company,
-          linkedin_url: contact.linkedin_url || "",
-          work_email: contact.email || null,
-          profile_pic_url: contact.photo_url || null,
-        })) || [],
-      total: response.data.pagination?.total_entries || 0,
-      credits_used: response.data.contacts?.length || 0,
-      provider: "Apollo.io (Contacts Search)",
+        response.data.data?.map((person) => {
+          // Handle email - if it's boolean true, show "Available (contact for details)"
+          let workEmail = null
+          if (person.work_email === true) {
+            workEmail = "Available (contact for details)"
+          } else if (person.work_email && typeof person.work_email === "string") {
+            workEmail = person.work_email
+          }
+
+          return {
+            first_name: person.first_name || "",
+            last_name: person.last_name || "",
+            job_title: person.job_title || "",
+            job_company_name: person.job_company_name || searchParams.company,
+            linkedin_url: person.linkedin_url || "",
+            work_email: workEmail,
+            profile_pic_url: person.profile_pic_url || null,
+          }
+        }) || [],
+      total: response.data.total || 0,
+      credits_used: response.data.data?.length || 0,
+      provider: "People Data Labs",
     }
 
-    console.log("Transformed data:", transformedData.data.length, "contacts")
+    console.log("Transformed data:", transformedData.data.length, "people")
 
-    // Log email success rate
+    // Log email status
     const emailCount = transformedData.data.filter((p) => p.work_email).length
     console.log(`Emails found: ${emailCount}/${transformedData.data.length}`)
 
     res.json(transformedData)
   } catch (error) {
-    console.error("Apollo.io API Error:", error.response?.data || error.message)
+    console.error("People Data Labs API Error:", error.response?.data || error.message)
 
-    // Handle specific Apollo.io errors
+    // Handle specific PDL errors
     if (error.response?.status === 401) {
       return res.status(401).json({
-        error: "Invalid Apollo.io API key",
+        error: "Invalid People Data Labs API key",
         details: "Please check your API key configuration",
-      })
-    }
-
-    if (error.response?.status === 403) {
-      return res.status(403).json({
-        error: "Apollo.io API access denied",
-        details: "Your API key doesn't have access to this endpoint. Try upgrading your Apollo.io plan.",
       })
     }
 
     if (error.response?.status === 429) {
       return res.status(429).json({
-        error: "Apollo.io rate limit exceeded",
-        details: "You've used all your credits. Try again next month or upgrade your plan.",
+        error: "People Data Labs rate limit exceeded",
+        details: "You've used all your credits. Try again later or upgrade your plan.",
+      })
+    }
+
+    if (error.response?.status === 402) {
+      return res.status(402).json({
+        error: "People Data Labs credits exhausted",
+        details: "Your credits are used up. Upgrade your PDL plan for more searches.",
       })
     }
 
     res.status(500).json({
       error: "Employee data extraction failed",
-      details: error.response?.data?.message || error.message,
+      details: error.response?.data?.error || error.message,
     })
   }
 })
@@ -128,7 +152,7 @@ app.post("/api/search-employees", async (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     message: "🚀 LinkedIn Employee Data Extractor API is running!",
-    provider: "Apollo.io (Contacts Search)",
+    provider: "People Data Labs",
     status: "healthy",
     timestamp: new Date().toISOString(),
   })
@@ -137,5 +161,5 @@ app.get("/", (req, res) => {
 // Start server
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`)
-  console.log(`🔗 Using Apollo.io Contacts Search API for employee data extraction`)
+  console.log(`🔗 Using People Data Labs API for employee data extraction`)
 })
