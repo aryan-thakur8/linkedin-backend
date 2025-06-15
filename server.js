@@ -64,22 +64,76 @@ app.post("/api/search-employees", async (req, res) => {
 
     console.log("Elasticsearch query:", JSON.stringify(elasticQuery, null, 2))
 
-    const response = await axios.post(
-      "https://api.peopledatalabs.com/v5/person/search",
-      {
-        query: elasticQuery,
-        size: 20,
-        pretty: true,
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "X-Api-Key": apiKey,
-        },
-      },
-    )
+    // Updated request body with proper field selection for emails
+    const requestBody = {
+      query: elasticQuery,
+      size: 20,
+      pretty: true,
+      // Request specific fields including email data
+      dataset: "phone,email,profile,professional",
+      required: "emails AND profiles",
+      // Select specific fields to ensure we get email addresses
+      select: [
+        "first_name",
+        "last_name",
+        "job_title",
+        "job_company_name",
+        "linkedin_url",
+        "emails",
+        "work_email",
+        "personal_emails",
+        "profiles",
+      ],
+    }
 
-    res.json(response.data)
+    const response = await axios.post("https://api.peopledatalabs.com/v5/person/search", requestBody, {
+      headers: {
+        "Content-Type": "application/json",
+        "X-Api-Key": apiKey,
+      },
+    })
+
+    console.log("Raw API Response:", JSON.stringify(response.data, null, 2))
+
+    // Transform response to extract actual email addresses
+    const transformedData = {
+      ...response.data,
+      data:
+        response.data.data?.map((person) => {
+          // Extract actual email from various possible fields
+          let workEmail = null
+
+          // Try different email field structures
+          if (person.emails && Array.isArray(person.emails) && person.emails.length > 0) {
+            // Find work email from emails array
+            const workEmailObj = person.emails.find((email) => email.type === "work" || email.type === "professional")
+            workEmail = workEmailObj ? workEmailObj.address : person.emails[0].address
+          } else if (person.work_email && typeof person.work_email === "string") {
+            workEmail = person.work_email
+          } else if (
+            person.personal_emails &&
+            Array.isArray(person.personal_emails) &&
+            person.personal_emails.length > 0
+          ) {
+            workEmail = person.personal_emails[0]
+          }
+
+          return {
+            ...person,
+            work_email: workEmail,
+            // Keep original email data for debugging
+            original_emails: person.emails,
+            email_debug: {
+              emails_type: typeof person.emails,
+              emails_value: person.emails,
+              work_email_type: typeof person.work_email,
+              work_email_value: person.work_email,
+            },
+          }
+        }) || [],
+    }
+
+    res.json(transformedData)
   } catch (error) {
     console.error("API Error:", error.response?.data || error.message)
     res.status(500).json({
