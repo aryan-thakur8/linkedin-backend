@@ -67,10 +67,8 @@ app.post("/api/search-employees", async (req, res) => {
     // MINIMAL request body - exactly as per PDL docs
     const requestBody = {
       query: elasticQuery,
-      size: 10, // Reduced to save credits
+      size: 5, // Even smaller to save credits while debugging
       pretty: true,
-      // NO dataset parameter - to avoid extra charges
-      // NO select parameter - to get all available fields including emails
     }
 
     const response = await axios.post("https://api.peopledatalabs.com/v5/person/search", requestBody, {
@@ -80,35 +78,70 @@ app.post("/api/search-employees", async (req, res) => {
       },
     })
 
-    console.log("Raw API Response Sample:", JSON.stringify(response.data.data?.[0], null, 2))
+    // DETAILED DEBUGGING - Log first person's ALL fields
+    if (response.data.data && response.data.data.length > 0) {
+      console.log("=== FIRST PERSON COMPLETE DATA ===")
+      console.log(JSON.stringify(response.data.data[0], null, 2))
+      console.log("=== EMAIL FIELDS SPECIFICALLY ===")
+      const firstPerson = response.data.data[0]
+      console.log("work_email:", firstPerson.work_email)
+      console.log("email:", firstPerson.email)
+      console.log("emails:", firstPerson.emails)
+      console.log("personal_emails:", firstPerson.personal_emails)
+      console.log("business_email:", firstPerson.business_email)
+      console.log("=== ALL FIELDS CONTAINING 'email' ===")
+      Object.keys(firstPerson).forEach((key) => {
+        if (key.toLowerCase().includes("email")) {
+          console.log(`${key}:`, firstPerson[key])
+        }
+      })
+    }
 
-    // Simple email extraction based on PDL standard response
+    // Enhanced email extraction with detailed logging
     const transformedData = {
       ...response.data,
       data:
-        response.data.data?.map((person) => {
-          // PDL returns emails in different formats:
-          // 1. work_email: string (direct work email)
-          // 2. emails: array of {address: string, type: string}
-          // 3. Sometimes just email: string
-
+        response.data.data?.map((person, index) => {
           let workEmail = null
+          let emailSource = "none"
 
-          // Priority order for email extraction
-          if (person.work_email && typeof person.work_email === "string" && person.work_email !== "true") {
+          // Check all possible email fields with logging
+          if (person.work_email && person.work_email !== true && person.work_email !== "true") {
             workEmail = person.work_email
-          } else if (person.emails && Array.isArray(person.emails)) {
-            // Find work email from emails array
-            const workEmailObj = person.emails.find(
-              (email) => email.type === "work" || email.type === "professional" || email.type === "business",
-            )
-            if (workEmailObj && workEmailObj.address) {
-              workEmail = workEmailObj.address
-            } else if (person.emails[0] && person.emails[0].address) {
-              workEmail = person.emails[0].address // Use first email as fallback
-            }
-          } else if (person.email && typeof person.email === "string" && person.email !== "true") {
+            emailSource = "work_email"
+          } else if (person.email && person.email !== true && person.email !== "true") {
             workEmail = person.email
+            emailSource = "email"
+          } else if (person.emails && Array.isArray(person.emails) && person.emails.length > 0) {
+            // Check emails array
+            const workEmailObj = person.emails.find(
+              (email) =>
+                email.address && (email.type === "work" || email.type === "professional" || email.type === "business"),
+            )
+            if (workEmailObj) {
+              workEmail = workEmailObj.address
+              emailSource = "emails_array_work"
+            } else if (person.emails[0] && person.emails[0].address) {
+              workEmail = person.emails[0].address
+              emailSource = "emails_array_first"
+            }
+          } else if (person.business_email && person.business_email !== true && person.business_email !== "true") {
+            workEmail = person.business_email
+            emailSource = "business_email"
+          } else if (
+            person.personal_emails &&
+            Array.isArray(person.personal_emails) &&
+            person.personal_emails.length > 0
+          ) {
+            workEmail = person.personal_emails[0]
+            emailSource = "personal_emails"
+          }
+
+          // Log email extraction for first few people
+          if (index < 3) {
+            console.log(`Person ${index + 1} - ${person.first_name} ${person.last_name}:`)
+            console.log(`  Email found: ${workEmail || "NONE"}`)
+            console.log(`  Email source: ${emailSource}`)
           }
 
           return {
@@ -119,6 +152,15 @@ app.post("/api/search-employees", async (req, res) => {
             linkedin_url: person.linkedin_url,
             work_email: workEmail,
             profile_pic_url: person.profile_pic_url,
+            // Add debug info to response
+            email_debug: {
+              source: emailSource,
+              raw_work_email: person.work_email,
+              raw_email: person.email,
+              raw_emails_array: person.emails,
+              has_emails_field: !!person.emails,
+              emails_length: person.emails ? person.emails.length : 0,
+            },
           }
         }) || [],
     }
